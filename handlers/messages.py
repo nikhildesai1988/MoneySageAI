@@ -4,6 +4,7 @@ handlers/messages.py - Telegram message handlers
 
 import asyncio
 import logging
+from typing import Any
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
@@ -88,7 +89,15 @@ def _is_recurring_list_request(text: str) -> bool:
     normalized = (text or "").strip().lower()
     wants_list = any(token in normalized for token in ("list", "show", "what", "which", "all"))
     recurring_topic = any(token in normalized for token in ("recurring", "subscription", "subscriptions", "bills"))
-    return wants_list and recurring_topic
+    balance_like = any(token in normalized for token in ("balance", "after", "afford", "remaining", "left", "net", "total"))
+    return wants_list and recurring_topic and not balance_like
+
+
+def _is_balance_question(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+    return any(token in normalized for token in ("balance", "how much", "current", "remaining", "left", "net", "after", "afford"))
 
 
 def _format_month_day(day: int) -> str:
@@ -100,33 +109,157 @@ def _format_month_day(day: int) -> str:
     return f"{day}{suffix} of every month"
 
 
+def _looks_like_new_request(text: str) -> bool:
+    """Heuristic to detect a fresh intent instead of a clarification answer."""
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+
+    starts_with = (
+        "add ", "log ", "spent ", "paid ", "got ", "received ", "show ",
+        "list ", "cancel ", "remove ", "help", "summary", "balance",
+        "can i ", "how much", "what",
+    )
+    return normalized.startswith(starts_with)
+
+
+def _preview(text: str, max_len: int = 220) -> str:
+    cleaned = (text or "").replace("\n", " ").strip()
+    if len(cleaned) <= max_len:
+        return cleaned
+    return cleaned[: max_len - 3] + "..."
+
+
+def _mentions_payment_method(text: str) -> bool:
+    """Heuristic: return True only when user text explicitly mentions payment source."""
+    normalized = f" {(text or '').strip().lower()} "
+    tokens = (
+        " cash ", " card ", " credit card ", " debit card ",
+        " visa ", " mastercard ", " discover ", " amex ", " american express ",
+        " bank ", " bank account ", " checking ", " savings ",
+        " paypal ", " venmo ", " zelle ", " apple pay ", " google pay ",
+        " upi ", " check ", " wire ", " ach ",
+    )
+    prepositions = (" with ", " via ", " from ", " using ", " through ", " on ", " to ")
+    if any(token in normalized for token in tokens):
+        return True
+    return any(prep in normalized for prep in prepositions) and any(token.strip() in normalized for token in tokens)
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_category(extracted: dict, default: str = "uncategorized") -> str:
+    category = (extracted.get("category") or "").strip() if isinstance(extracted.get("category"), str) else extracted.get("category")
+    if isinstance(category, str) and category:
+        return category
+
+    description = extracted.get("description")
+    if isinstance(description, str) and description.strip():
+        return description.strip()
+
+    return default
+
+
+def _maybe_build_payment_follow_up(extracted: dict | None, user_text: str) -> tuple[dict, str] | None:
+    """Build pending state when extractor found a finance write intent without payment method."""
+    if not isinstance(extracted, dict):
+        return None
+
+    intent = extracted.get("intent")
+    payment_method = extracted.get("payment_method")
+    has_explicit_payment = _mentions_payment_method(user_text)
+    if intent not in {"log_expense", "log_income", "add_recurring"}:
+        return None
+
+    # Even if model guessed a payment method, require explicit mention in user text.
+    if payment_method and has_explicit_payment:
+        return None
+
+    amount = _to_float(extracted.get("amount"))
+    if amount is None or amount <= 0:
+        return None
+
+    if intent == "add_recurring":
+        name = extracted.get("recurring_name")
+        if not name:
+            return None
+        pending = {
+            "intent": "add_recurring",
+            "recurring_name": name,
+            "amount": amount,
+            "recurring_day_of_month": extracted.get("recurring_day_of_month") or 1,
+            "recurring_end_date": extracted.get("recurring_end_date"),
+        }
+    else:
+        pending = {
+            "intent": "log_expense" if intent == "log_expense" else "log_income",
+            "amount": amount,
+            "category": _resolve_category(extracted, default="income" if intent == "log_income" else "uncategorized"),
+            "description": extracted.get("description"),
+            "txn_date": extracted.get("txn_date"),
+        }
+
+    prompt = "Which payment method should I use (e.g., Cash, Discover, Bank Account)?"
+    return pending, prompt
+
+
+def _normalize_day_of_month(value: Any, default: int = 1) -> int:
+    try:
+        day = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(28, max(1, day))
+
+
 @owner_only
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle natural language financial messages."""
     text = (update.message.text or "").strip()
     normalized = text.lower()
     pending_clarification = context.user_data.get("awaiting_clarification")
+    log.info("[chat] input: %s", _preview(text))
+
+    async def _reply(text_out: str, parse_mode: str | None = None):
+        log.info("[chat] output: %s", _preview(text_out))
+        await update.message.reply_text(text_out, parse_mode=parse_mode)
 
     greeting_phrases = {
         "hi", "hello", "hey", "hey there", "good morning", "good afternoon",
         "good evening", "yo", "hi there", "hello there"
     }
     if normalized in greeting_phrases or normalized.startswith(("hi ", "hello ", "hey ", "yo ")):
-        await update.message.reply_text(_personalize_markdown_intro(update, HELP_MESSAGE), parse_mode="Markdown")
+        await _reply(_personalize_markdown_intro(update, HELP_MESSAGE), parse_mode="Markdown")
         return
+
+    if pending_clarification and _looks_like_new_request(text):
+        # User started a new request; drop stale clarification context.
+        context.user_data.pop("awaiting_clarification", None)
+        pending_clarification = None
+
+    # Balance/affordability questions should go to the AI path, not the recurring-charge list shortcut.
+    if _is_balance_question(text):
+        pending_clarification = context.user_data.get("awaiting_clarification")
+        # Fall through to the AI/router path below.
 
     # Deterministic recurring list request path (avoid model choosing reminder-only tools).
     if _is_recurring_list_request(text):
         charges = db.get_active_recurring_charges()
         if not charges:
-            await update.message.reply_text(_personalize_text(update, "No active recurring charges."))
+            await _reply(_personalize_text(update, "No active recurring charges."))
             return
         lines = [
             f"- {c['name']}: {CURRENCY}{c['amount']:.2f} on the {_format_month_day(c['day_of_month'])}"
             + (f" (ends {c['end_date']})" if c.get("end_date") else "")
             for c in charges
         ]
-        await update.message.reply_text(_personalize_text(update, "Active recurring charges:\n" + "\n".join(lines)))
+        await _reply(_personalize_text(update, "Active recurring charges:\n" + "\n".join(lines)))
         return
 
     # If we asked a follow-up question (e.g., payment method), handle that reply first.
@@ -143,7 +276,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pending.get("description"), pending.get("txn_date"),
                 payment_method=payment_method
             )
-            await update.message.reply_text(
+            await _reply(
                 _personalize_text(
                     update,
                     f"Logged expense: {CURRENCY}{pending['amount']:.2f} "
@@ -156,9 +289,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pending.get("description"), pending.get("txn_date"),
                 payment_method=payment_method
             )
-            await update.message.reply_text(
-                _personalize_text(update, f"Logged income: {CURRENCY}{pending['amount']:.2f} from {payment_method}")
-            )
+            await _reply(_personalize_text(update, f"Logged income: {CURRENCY}{pending['amount']:.2f} from {payment_method}"))
         elif intent == "add_recurring":
             db.add_recurring_charge(
                 pending["recurring_name"], pending["amount"],
@@ -166,7 +297,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 end_date=pending.get("recurring_end_date"),
                 payment_method=payment_method
             )
-            await update.message.reply_text(
+            await _reply(
                 _personalize_text(
                     update,
                     f"Added recurring charge: {pending['recurring_name']} "
@@ -175,6 +306,63 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         await maybe_warn_about_budget(update, context)
         return
+
+    if not pending_clarification:
+        extracted = None
+        try:
+            extracted = models.classify_and_extract(text)
+            follow_up = _maybe_build_payment_follow_up(extracted, text)
+        except budget.BudgetExceededError:
+            await _reply(_personalize_text(update, BUDGET_HARD_STOP_MESSAGE.format(currency=CURRENCY, budget=MONTHLY_BUDGET_USD)))
+            return
+        except Exception as exc:
+            log.debug("payment-method precheck skipped: %s", exc)
+            follow_up = None
+
+        if follow_up is not None:
+            pending, prompt = follow_up
+            context.user_data["awaiting_payment_method"] = pending
+            await _reply(_personalize_text(update, prompt))
+            return
+
+        # Deterministic structured-intent path for core write flows.
+        # This avoids autonomous-loop retries issuing duplicate writes.
+        if isinstance(extracted, dict):
+            intent = extracted.get("intent")
+            amount = _to_float(extracted.get("amount"))
+            if intent == "log_expense" and amount and amount > 0:
+                category = _resolve_category(extracted, default="uncategorized")
+                description = extracted.get("description")
+                txn_date = extracted.get("txn_date")
+                payment_method = extracted.get("payment_method")
+                db.add_transaction("expense", amount, category, description, txn_date, payment_method=payment_method)
+                via = f" via {payment_method}" if payment_method else ""
+                await _reply(_personalize_text(update, f"Logged expense: {CURRENCY}{amount:.2f} ({category}){via}"))
+                await maybe_warn_about_budget(update, context)
+                return
+
+            if intent == "log_income" and amount and amount > 0:
+                category = _resolve_category(extracted, default="income")
+                description = extracted.get("description")
+                txn_date = extracted.get("txn_date")
+                payment_method = extracted.get("payment_method")
+                db.add_transaction("income", amount, category, description, txn_date, payment_method=payment_method)
+                via = f" via {payment_method}" if payment_method else ""
+                await _reply(_personalize_text(update, f"Logged income: {CURRENCY}{amount:.2f}{via}"))
+                await maybe_warn_about_budget(update, context)
+                return
+
+            if intent == "add_recurring" and amount and amount > 0:
+                name = extracted.get("recurring_name")
+                if name:
+                    day = _normalize_day_of_month(extracted.get("recurring_day_of_month"), default=1)
+                    end_date = extracted.get("recurring_end_date")
+                    payment_method = extracted.get("payment_method")
+                    db.add_recurring_charge(name, amount, day, end_date=end_date, payment_method=payment_method)
+                    via = f" via {payment_method}" if payment_method else ""
+                    await _reply(_personalize_text(update, f"Added recurring charge: {name} ({CURRENCY}{amount:.2f}/month){via}"))
+                    await maybe_warn_about_budget(update, context)
+                    return
 
     # Scope and safety guardrails: keep agent focused on personal finance coaching.
     # If the user is answering a prior clarification question, bypass guardrails and
@@ -192,7 +380,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         decision = route_message(text)
         if decision.mode in ("empathetic_redirect", "decline"):
-            await update.message.reply_text(_personalize_text(update, decision.reply or "I can help with personal finance topics."))
+            await _reply(_personalize_text(update, decision.reply or "I can help with personal finance topics."))
             return
         agent_input = text
 
@@ -211,14 +399,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except budget.BudgetExceededError:
         stop_typing.set()
         await typing_task
-        await update.message.reply_text(
-            _personalize_text(update, BUDGET_HARD_STOP_MESSAGE.format(currency=CURRENCY, budget=MONTHLY_BUDGET_USD))
-        )
+        await _reply(_personalize_text(update, BUDGET_HARD_STOP_MESSAGE.format(currency=CURRENCY, budget=MONTHLY_BUDGET_USD)))
         return
     except TimeoutError:
+        context.user_data.pop("awaiting_clarification", None)
         stop_typing.set()
         await typing_task
-        await update.message.reply_text(
+        await _reply(
             _personalize_text(
                 update,
                 "This is taking longer than expected. I may be waiting on the model. "
@@ -236,7 +423,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "question": agent_result.get("message") or "",
             "required_fields": agent_result.get("required_fields") or [],
         }
-        await update.message.reply_text(_personalize_text(update, agent_result.get("message") or "I need one more detail."))
+        await _reply(_personalize_text(update, agent_result.get("message") or "I need one more detail."))
         return
 
     # Clarification loop is complete once we get a non-clarification response.
@@ -254,7 +441,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from datetime import date
             ym = date.today().strftime("%Y-%m")
             summary = db.month_summary(ym)
-            await update.message.reply_text(
+            await _reply(
                 _personalize_text(
                     update,
                     f"Your income status for {ym}:\n"
@@ -267,9 +454,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     if agent_result.get("ok"):
-        await update.message.reply_text(_personalize_text(update, agent_result.get("message") or "Done."))
+        await _reply(_personalize_text(update, agent_result.get("message") or "Done."))
     else:
-        await update.message.reply_text(
+        context.user_data.pop("awaiting_clarification", None)
+        await _reply(
             _personalize_text(
                 update,
                 agent_result.get("message")

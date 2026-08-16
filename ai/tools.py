@@ -4,7 +4,7 @@ ai/tools.py - Tool registry and executor for autonomous finance agent
 
 import hashlib
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 import db
@@ -97,6 +97,11 @@ def add_transaction(
         raise ValueError("amount must be > 0")
 
     txn_date = txn_date or _today()
+    # Models occasionally emit placeholders like "YYYY-MM-DD"; coerce invalid dates to today.
+    try:
+        datetime.strptime(txn_date, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        txn_date = _today()
     existing_same_day = db.get_transactions(start_date=txn_date, end_date=txn_date)
     similar_count = sum(
         1
