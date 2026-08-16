@@ -131,10 +131,11 @@ cd /Users/nikhildesai/AI/Agents/MoneySage
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
 python bot.py
 ```
 
-Make sure your `.env` file is populated before starting the bot.
+Make sure your `.env` file is populated with real values before starting the bot.
 
 ## Running tests
 
@@ -246,4 +247,4 @@ fly deploy
 
 ## License
 
-This project is intended for personal use and local deployment. If you plan to publish or distribute it, add an explicit license file before doing so.
+MIT License. See `LICENSE`.
