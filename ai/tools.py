@@ -95,8 +95,27 @@ def add_transaction(
         raise ValueError("type_ must be 'income' or 'expense'")
     if amount is None or float(amount) <= 0:
         raise ValueError("amount must be > 0")
+
+    txn_date = txn_date or _today()
+    existing_same_day = db.get_transactions(start_date=txn_date, end_date=txn_date)
+    similar_count = sum(
+        1
+        for t in existing_same_day
+        if t.get("type") == type_
+        and abs(float(t.get("amount") or 0.0) - float(amount)) < 0.01
+        and (t.get("category") or "").lower() == (category or "").lower()
+        and (t.get("payment_method") or "").lower() == (payment_method or "").lower()
+    )
+
     txn_id = db.add_transaction(type_, float(amount), category, description, txn_date, payment_method)
-    return {"id": txn_id, "type": type_, "amount": float(amount), "payment_method": payment_method}
+    result = {"id": txn_id, "type": type_, "amount": float(amount), "payment_method": payment_method}
+    if similar_count > 0:
+        result["warning"] = (
+            f"Found {similar_count} similar transaction(s) on {txn_date}. "
+            "This entry was still added."
+        )
+        result["similar_existing_count"] = similar_count
+    return result
 
 
 def add_recurring_charge(
@@ -113,8 +132,26 @@ def add_recurring_charge(
     day = int(day_of_month)
     if day < 1 or day > 28:
         raise ValueError("day_of_month must be between 1 and 28")
+
+    active = db.get_active_recurring_charges()
+    normalized_name = name.strip().lower()
+    similar_count = sum(
+        1
+        for c in active
+        if (c.get("name") or "").strip().lower() == normalized_name
+        and abs(float(c.get("amount") or 0.0) - float(amount)) < 0.01
+        and int(c.get("day_of_month") or 0) == day
+    )
+
     charge_id = db.add_recurring_charge(name, float(amount), day, end_date=end_date, payment_method=payment_method)
-    return {"id": charge_id, "name": name, "amount": float(amount), "day_of_month": day}
+    result = {"id": charge_id, "name": name, "amount": float(amount), "day_of_month": day}
+    if similar_count > 0:
+        result["warning"] = (
+            f"Found {similar_count} similar active recurring charge(s). "
+            "This entry was still added."
+        )
+        result["similar_existing_count"] = similar_count
+    return result
 
 
 def remove_recurring_charge_by_name(name: str) -> dict:
@@ -252,8 +289,6 @@ TOOL_MAP: dict[str, Callable[..., Any]] = {
 
 
 MUTATING_TOOLS = {
-    "add_transaction",
-    "add_recurring_charge",
     "remove_recurring_charge_by_name",
     "set_user_preference",
     "get_upcoming_unreminded_charges",

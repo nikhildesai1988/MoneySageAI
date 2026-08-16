@@ -17,6 +17,8 @@ FINANCE_KEYWORDS = {
     "subscription", "recurring", "save", "saving", "savings", "spend", "spending",
     "afford", "debt", "loan", "credit", "cash", "bank", "card", "money", "finance",
     "invest", "investment", "tax", "buy", "purchase", "goal", "plan",
+    "monthly", "charge", "charges", "payment", "payments", "utility", "utilities",
+    "mortgage", "insurance", "netflix", "spotify",
 }
 
 SMALLTALK_KEYWORDS = {

@@ -14,7 +14,7 @@ def test_add_transaction_validation():
         tools.add_transaction("other", 10)
 
 
-def test_execute_tool_idempotency_for_mutating_tool():
+def test_execute_tool_add_transaction_allows_duplicate_inserts_with_warning():
     args = {
         "type_": "expense",
         "amount": 12.34,
@@ -27,8 +27,25 @@ def test_execute_tool_idempotency_for_mutating_tool():
     first = tools.execute_tool("add_transaction", args)
     second = tools.execute_tool("add_transaction", args)
 
-    assert first["id"] == second["id"]
-    assert second.get("idempotent_replay") is True
+    assert first["id"] != second["id"]
+    assert "warning" in second
+    assert second.get("similar_existing_count", 0) >= 1
+
+
+def test_execute_tool_add_recurring_allows_duplicate_inserts_with_warning():
+    args = {
+        "name": "Rent",
+        "amount": 3275,
+        "day_of_month": 1,
+        "payment_method": "Bank",
+    }
+
+    first = tools.execute_tool("add_recurring_charge", args)
+    second = tools.execute_tool("add_recurring_charge", args)
+
+    assert first["id"] != second["id"]
+    assert "warning" in second
+    assert second.get("similar_existing_count", 0) >= 1
 
 
 def test_get_upcoming_unreminded_charges_marks_once(monkeypatch):

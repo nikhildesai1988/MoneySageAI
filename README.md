@@ -13,7 +13,8 @@ It is designed for a single owner and keeps everything local: Telegram messages 
 - Performs tool-calling to query and update finance data
 - Asks clarification questions if required fields are missing
 - Verifies mutating writes with follow-up read checks
-- Prevents duplicate writes with idempotency keys
+- Allows intentional duplicate adds, while warning when similar expenses/recurring charges already exist
+- Uses idempotency for selected safety operations (for example reminders and preference storage)
 - Persists lightweight preferences through agent tools
 - Warns and stops AI usage when a monthly budget cap is hit
 
@@ -34,7 +35,7 @@ It is designed for a single owner and keeps everything local: Telegram messages 
 - `db.py` - SQLite schema and database access helpers
 - `ai/provider.py` - provider abstraction (Anthropic or Ollama)
 - `ai/models.py` - autonomous agent loop and scheduled agent execution
-- `ai/tools.py` - tool registry, tool executor, idempotency wrapper, preference tools
+- `ai/tools.py` - tool registry, tool executor, duplicate-warning logic, selective idempotency, preference tools
 - `handlers/messages.py` - chat handler routed through autonomous agent
 - `handlers/commands.py` - slash command handlers
 - `handlers/jobs.py` - scheduled daily/weekly/monthly AI updates
@@ -52,7 +53,7 @@ It is designed for a single owner and keeps everything local: Telegram messages 
   - `clarify`
   - `final`
 5. On `tool`, `ai/tools.py` executes DB-backed tools and returns results.
-6. Mutating tools are protected by idempotency keys to prevent duplicate writes.
+6. Add tools always insert new entries; if a similar record exists, tools return a warning so users can still force-add intentionally.
 7. Post-write verification runs follow-up read tools to confirm state.
 8. On `final`, the response is sent to Telegram.
 9. Scheduled jobs (`handlers/jobs.py`) use `run_scheduled_agent(...)`, so summaries are also tool-driven.
@@ -73,7 +74,7 @@ flowchart TD
   HJ --> M
   HC --> M2[ai/models.py\nsummary/advice helpers]
 
-  M --> T[ai/tools.py\nTool Executor + Idempotency]
+  M --> T[ai/tools.py\nTool Executor + Warnings + Selective Idempotency]
   T --> D[db.py]
   D --> S[(SQLite: data/finbot.db)]
 
@@ -150,7 +151,7 @@ pytest
 
 Current coverage focus:
 - DB persistence and monthly aggregates
-- Tool validation and idempotency
+- Tool validation, duplicate warning behavior, and selective idempotency
 - Agent loop actions (plan/tool/final/clarify)
 - Telegram command/message handler behavior
 - Scheduled job delivery paths
@@ -185,7 +186,7 @@ The app uses SQLite tables for:
 - `recurring_charges` — subscriptions or repeating payments
 - `reminders_sent` — deduplication for recurring reminders
 - `api_usage` — token usage and cost tracking for budget enforcement
-- `tool_idempotency` — dedupe storage for mutating tool calls and preference values
+- `tool_idempotency` — storage for selected idempotent operations and preference values
 
 ## Agent capabilities
 
@@ -244,6 +245,10 @@ fly deploy
 - Added sensitive log redaction in `bot.py` to mask Telegram tokens and common auth/key patterns
 - Tightened noisy HTTP logging in `bot.py` (`httpx`/`httpcore` set to `ERROR`)
 - Fixed payment-method follow-up flow in `handlers/messages.py` so short replies like `Discover` are processed before guardrail routing
+- Added clarification-context persistence so follow-up answers like `3275$` resume the same task instead of being treated out-of-scope
+- Added deterministic natural-language recurring-list handling so requests like "show all recurring charges" always return full active list
+- Added `/summaryweek` and `/summarymonth` aliases and typing indicators for summary commands
+- Changed add behavior to "warn but allow": recurring charges and transactions now always insert, with similarity warnings instead of idempotent replay
 
 ## License
 

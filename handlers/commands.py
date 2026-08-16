@@ -19,6 +19,27 @@ import db
 log = logging.getLogger("finbot")
 
 
+def _display_name(update: Update) -> str | None:
+    user = update.effective_user
+    if not user:
+        return None
+    return user.first_name or user.username or None
+
+
+def _personalize_text(update: Update, text: str) -> str:
+    name = _display_name(update)
+    if not name:
+        return text
+    return f"{name}, {text}"
+
+
+def _personalize_markdown_intro(update: Update, text: str) -> str:
+    name = _display_name(update)
+    if not name:
+        return text
+    return f"Hi {name}.\n\n{text}"
+
+
 async def _typing_heartbeat(bot, chat_id: int, stop_event: asyncio.Event):
     """Send periodic typing action while long operations are running."""
     while not stop_event.is_set():
@@ -63,20 +84,23 @@ def owner_only(func):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     await update.message.reply_text(
-        "MoneySage online. I run as an autonomous finance agent with tool-calling.\n\n"
-        "What I do automatically:\n"
-        "• Plan steps and call finance tools (read/write)\n"
-        "• Ask clarifying questions when details are missing\n"
-        "• Verify write actions with follow-up reads\n"
-        "• Prevent duplicate writes with idempotency checks\n"
-        "• Generate AI-driven daily/weekly/monthly updates\n\n"
-        "Try messages like:\n"
-        "• \"Spent 45 on groceries with Discover\"\n"
-        "• \"Got salary 3000\"\n"
-        "• \"Add Netflix 15 monthly on Visa\"\n"
-        "• \"Cancel my Netflix\"\n"
-        "• \"Can I afford a 200 jacket this week?\"\n\n"
-        "Commands: /help /balance /recurring /summary_week /summary_month /usage"
+        _personalize_text(
+            update,
+            "MoneySage online. I run as an autonomous finance agent with tool-calling.\n\n"
+            "What I do automatically:\n"
+            "• Plan steps and call finance tools (read/write)\n"
+            "• Ask clarifying questions when details are missing\n"
+            "• Verify write actions with follow-up reads\n"
+            "• Warn about similar adds but still let you add intentionally\n"
+            "• Generate AI-driven daily/weekly/monthly updates\n\n"
+            "Try messages like:\n"
+            "• \"Spent 45 on groceries with Discover\"\n"
+            "• \"Got salary 3000\"\n"
+            "• \"Add Netflix 15 monthly on Visa\"\n"
+            "• \"Cancel my Netflix\"\n"
+            "• \"Can I afford a 200 jacket this week?\"\n\n"
+            "Commands: /help /balance /recurring /summary_week /summary_month /usage",
+        )
     )
 
 
@@ -86,8 +110,11 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ym = date.today().strftime("%Y-%m")
     s = db.month_summary(ym)
     await update.message.reply_text(
-        f"This month so far:\nIncome: {CURRENCY}{s['income']:.2f}\n"
-        f"Expenses: {CURRENCY}{s['expense']:.2f}\nNet: {CURRENCY}{s['net']:.2f}"
+        _personalize_text(
+            update,
+            f"This month so far:\nIncome: {CURRENCY}{s['income']:.2f}\n"
+            f"Expenses: {CURRENCY}{s['expense']:.2f}\nNet: {CURRENCY}{s['net']:.2f}",
+        )
     )
 
 
@@ -96,14 +123,14 @@ async def recurring(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /recurring command."""
     charges = db.get_active_recurring_charges()
     if not charges:
-        await update.message.reply_text("No active recurring charges.")
+        await update.message.reply_text(_personalize_text(update, "No active recurring charges."))
         return
     lines = [
         f"• {c['name']}: {CURRENCY}{c['amount']:.2f} on the {format_month_day(c['day_of_month'])}"
         + (f" (ends {c['end_date']})" if c["end_date"] else "")
         for c in charges
     ]
-    await update.message.reply_text("Active recurring charges:\n" + "\n".join(lines))
+    await update.message.reply_text(_personalize_text(update, "Active recurring charges:\n" + "\n".join(lines)))
 
 
 @owner_only
@@ -129,7 +156,7 @@ async def summary_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stop_typing.set()
         await typing_task
 
-    await update.message.reply_text(summary)
+    await update.message.reply_text(_personalize_text(update, summary))
 
 
 @owner_only
@@ -156,7 +183,7 @@ async def summary_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stop_typing.set()
         await typing_task
 
-    await update.message.reply_text(summary)
+    await update.message.reply_text(_personalize_text(update, summary))
 
 
 @owner_only
@@ -167,17 +194,20 @@ async def usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filled = min(bar_len, int(status["ratio"] * bar_len))
     bar = "█" * filled + "░" * (bar_len - filled)
     await update.message.reply_text(
-        f"Claude API usage this month ({status['period']}):\n"
-        f"{bar} {status['ratio']*100:.0f}%\n"
-        f"{CURRENCY}{status['spend_usd']:.4f} / {CURRENCY}{status['budget_usd']:.2f}\n"
-        f"Hard cap: {'ON' if HARD_CAP else 'OFF'}"
+        _personalize_text(
+            update,
+            f"Claude API usage this month ({status['period']}):\n"
+            f"{bar} {status['ratio']*100:.0f}%\n"
+            f"{CURRENCY}{status['spend_usd']:.4f} / {CURRENCY}{status['budget_usd']:.2f}\n"
+            f"Hard cap: {'ON' if HARD_CAP else 'OFF'}",
+        )
     )
 
 
 @owner_only
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command."""
-    await update.message.reply_text(HELP_MESSAGE, parse_mode="Markdown")
+    await update.message.reply_text(_personalize_markdown_intro(update, HELP_MESSAGE), parse_mode="Markdown")
 
 
 def build_weekly_summary() -> str:

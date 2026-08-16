@@ -42,13 +42,22 @@ class FakeBot:
 
 
 @dataclass
+class FakeUser:
+    first_name: str = "Nikhil"
+    username: str = "tester"
+    last_name: str | None = None
+
+
+@dataclass
 class FakeUpdate:
     chat_id: int = 12345
     text: str = ""
     username: str = "tester"
+    first_name: str = "Nikhil"
 
     def __post_init__(self):
         self.effective_chat = FakeChat(id=self.chat_id, username=self.username)
+        self.effective_user = FakeUser(first_name=self.first_name, username=self.username)
         self.message = FakeMessage(text=self.text)
 
 
