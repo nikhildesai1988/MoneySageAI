@@ -4,14 +4,6 @@ MoneySage is a Telegram-based autonomous personal finance agent. It can plan act
 
 It is designed for a single owner and keeps everything local: Telegram messages are processed through a Python bot, transaction data is stored in SQLite, and AI usage is tracked so it does not exceed a monthly budget.
 
-## Latest changes
-
-- Added a full pytest suite under `tests/` with isolated SQLite fixtures and mocked Telegram/AI integrations
-- Added `requirements-dev.txt` and `pytest.ini` for reproducible local test execution
-- Added sensitive log redaction in `bot.py` to mask Telegram tokens and common auth/key patterns
-- Tightened noisy HTTP logging in `bot.py` (`httpx`/`httpcore` set to `ERROR`)
-- Fixed payment-method follow-up flow in `handlers/messages.py` so short replies like `Discover` are processed before guardrail routing
-
 ## What it does
 
 - Logs expenses and income from natural language messages
@@ -243,6 +235,14 @@ fly deploy
 - Better recurring charge customization
 - Charts and richer reporting
 - Multi-user support
+
+## Latest changes
+
+- Added a full pytest suite under `tests/` with isolated SQLite fixtures and mocked Telegram/AI integrations
+- Added `requirements-dev.txt` and `pytest.ini` for reproducible local test execution
+- Added sensitive log redaction in `bot.py` to mask Telegram tokens and common auth/key patterns
+- Tightened noisy HTTP logging in `bot.py` (`httpx`/`httpcore` set to `ERROR`)
+- Fixed payment-method follow-up flow in `handlers/messages.py` so short replies like `Discover` are processed before guardrail routing
 
 ## License
 
