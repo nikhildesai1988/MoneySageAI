@@ -1,0 +1,25 @@
+# Fly.io config for MoneySage
+# Deploy with: fly launch  (first time)  /  fly deploy (updates)
+
+app = "moneysage"       # change to something unique, fly will tell you if taken
+primary_region = "iad"  # pick the region closest to you
+
+[build]
+
+[env]
+  TIMEZONE = "America/New_York"
+  CURRENCY_SYMBOL = "$"
+  MONTHLY_BUDGET_USD = "5.00"
+  ENFORCE_HARD_CAP = "true"
+
+# No [[services]] / http section needed - this bot uses long-polling,
+# not a webhook, so it doesn't need to accept inbound HTTP traffic.
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[mounts]
+  source = "finbot_data"
+  destination = "/app/data"
